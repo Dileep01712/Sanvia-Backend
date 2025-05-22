@@ -129,7 +129,7 @@ async def fetch_new_releases_periodically(interval: int = 7200):
 
         if songs and isinstance(songs, list):
             cached_new_releases = songs
-            
+
         logger.info(f"Updated {len(cached_new_releases)} new releases.")
         logger.info("Sleeping for 3 hours...")
         await asyncio.sleep(interval)
@@ -137,7 +137,7 @@ async def fetch_new_releases_periodically(interval: int = 7200):
 
 @app.route("/")
 def index():
-    return "Sanvia is running. Visit /songs for the latest songs."
+    return "Sanvia is running. Visit particular routes for songs."
 
 
 @app.route("/songs")
@@ -155,19 +155,24 @@ def run_flask():
 
 
 async def main():
-    asyncio.create_task(fetch_songs_periodically())
-    asyncio.create_task(fetch_new_releases_periodically())
+    try:
+        asyncio.create_task(fetch_songs_periodically())
+        asyncio.create_task(fetch_new_releases_periodically())
 
-    server_thread = threading.Thread(target=run_flask)
-    server_thread.daemon = True
-    server_thread.start()
+        server_thread = threading.Thread(target=run_flask)
+        server_thread.daemon = True
+        server_thread.start()
 
-    while True:
-        await asyncio.sleep(3600)  # 3600
+        while True:
+            await asyncio.sleep(3600)  # 3600
+    except Exception as e:
+        logger.error(f"Main loop exception: {e}")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
     except KeyboardInterrupt:
         logger.info("Shutting down...")
