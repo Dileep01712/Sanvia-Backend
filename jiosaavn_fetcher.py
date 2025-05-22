@@ -57,12 +57,13 @@ async def get_top_songs_from_playlist(playlist_url: str, limit: int = 12):
         return None
 
 
-# 3 hrs = 10800
+# 2 hrs = 7200
 async def fetch_songs_periodically(interval: int = 7200):
     global cached_songs
     while True:
         logger.info("Fetching latest songs...")
         songs = await get_top_songs_from_playlist(PLAYLIST_URL)
+        logger.info(songs)
         new_output = []
 
         if songs and isinstance(songs, list):
