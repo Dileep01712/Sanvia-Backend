@@ -27,7 +27,7 @@ async def get_top_songs_from_playlist(playlist_url: str, limit: int = 12):
     saavn = JioSaavn()
     try:
         playlist_data = await saavn.get_playlist_songs(playlist_url, limit=limit)
-        # logger.info(f"Raw playlist data: {playlist_data}")
+        logger.info(f"Raw playlist data: {playlist_data}")
 
         songs = []
 
@@ -50,6 +50,7 @@ async def get_top_songs_from_playlist(playlist_url: str, limit: int = 12):
             if "150x150" in song.get("image", ""):
                 song["image"] = song["image"].replace("150x150", "500x500")
 
+        logger.info(f"Songs before return: {songs}")
         return songs
 
     except Exception as e:
@@ -63,7 +64,7 @@ async def fetch_songs_periodically(interval: int = 7200):
     while True:
         logger.info("Fetching latest songs...")
         songs = await get_top_songs_from_playlist(PLAYLIST_URL)
-        logger.info(songs)
+        logger.info(f"fetch_songs_periodically: {songs}")
         new_output = []
 
         if songs and isinstance(songs, list):
@@ -77,6 +78,7 @@ async def fetch_songs_periodically(interval: int = 7200):
                         "downloadUrl": song.get("perma_url", ""),
                     }
                 )
+        logger.info(f"new_output: {new_output}")
         cached_songs = new_output
         logger.info(f"Updated {len(cached_songs)} songs.")
         logger.info("Sleeping for 3 hours...")
