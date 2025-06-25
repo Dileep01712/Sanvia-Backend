@@ -226,6 +226,16 @@ def index():
 
 @app.route("/now-trending")
 def now_trending():
+    file_path = os.path.join(os.path.dirname(__file__), "now_trending.json")
+
+    if not os.path.exists(file_path):
+        logger.warning("📁 now_trending.json not found!")
+        return jsonify([])
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+        logger.info("📄 now_trending.json content preview: %s", content[:300])
+
     return send_file("now_trending.json", mimetype="application/json")
 
 
