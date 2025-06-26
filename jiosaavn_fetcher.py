@@ -1,5 +1,4 @@
 import os
-import json
 import html
 import string
 import random
@@ -9,7 +8,8 @@ import threading
 from waitress import serve
 from jiosaavn import JioSaavn
 from dotenv import load_dotenv
-from flask import Flask, jsonify, send_file
+from flask import Flask, jsonify
+from firebase import upload_now_trending_to_firebase, read_now_trending_from_firebase
 
 app = Flask(__name__)
 load_dotenv()
@@ -31,36 +31,7 @@ cached_new_releases = []
 
 async def fetch_and_save_top_songs(limit: int = 12):
     try:
-        playlist_data = await saavn.get_playlist_songs(PLAYLIST_URL, limit=limit)
-
-        if not playlist_data or "data" not in playlist_data:
-            logger.error(f"Failed to fetch playlist.")
-            return
-
-        data = playlist_data.get("data", {})
-        if isinstance(data, dict):
-            song_list = data.get("list", [])
-        else:
-            logger.error("'data' is not a dictionary")
-            return
-
-        top_songs = []
-        for song in song_list[:limit]:
-            top_songs.append(
-                {
-                    "id": song.get("id", ""),
-                    "name": html.unescape(song.get("title", "")),
-                    "primaryArtists": html.unescape(song.get("subtitle", "")),
-                    "image": song.get("image", "").replace("150x150", "500x500"),
-                    "downloadUrl": song.get("perma_url", ""),
-                }
-            )
-
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            json.dump(top_songs, f, indent=2, ensure_ascii=False)
-
-        logger.info(f"Saved top {limit} songs to json file.")
-
+        await upload_now_trending_to_firebase(limit)
     except Exception as e:
         logger.error(f"Error fetching playlist: {e}")
         return
@@ -226,17 +197,12 @@ def index():
 
 @app.route("/now-trending")
 def now_trending():
-    file_path = os.path.join(os.path.dirname(__file__), "now_trending.json")
-
-    if not os.path.exists(file_path):
-        logger.warning("📁 now_trending.json not found!")
-        return jsonify([])
-
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
-        logger.info("📄 now_trending.json content preview: %s", content[:300])
-
-    return send_file("now_trending.json", mimetype="application/json")
+    try:
+        data = asyncio.run(read_now_trending_from_firebase())
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Error reading now trending from Firebase: {e}")
+        return jsonify({"error": "Failed to fetch data"})
 
 
 @app.route("/new-releases")
