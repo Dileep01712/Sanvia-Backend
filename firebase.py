@@ -1,4 +1,5 @@
 import os
+import json
 import html
 import logging
 import firebase_admin
@@ -18,10 +19,11 @@ logger = logging.getLogger(__name__)
 
 saavn = JioSaavn()
 FIREBASE_DB_URL = os.getenv("FIREBASE_DB_URL")
+FIREBASE_CREDENTIALS_JSON = json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"])
 PLAYLIST_URL = os.getenv("PLAYLIST_URL")
 
 if not firebase_admin._apps:
-    cred = credentials.Certificate("firebase_credentials.json")
+    cred = credentials.Certificate(FIREBASE_CREDENTIALS_JSON)
     firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
 
 
