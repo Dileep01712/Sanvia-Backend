@@ -1,17 +1,21 @@
 import os
+import re
 import html
 import string
 import random
 import logging
 import asyncio
+import requests
 import threading
 from waitress import serve
+from flask_cors import CORS
 from jiosaavn import JioSaavn
 from dotenv import load_dotenv
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_file, request
 from firebase import upload_now_trending_to_firebase, read_now_trending_from_firebase
 
 app = Flask(__name__)
+CORS(app)
 load_dotenv()
 
 logging.basicConfig(
@@ -190,6 +194,50 @@ async def fetch_top_artists_periodically(interval: int = 7200):
         await asyncio.sleep(interval)
 
 
+def sanitize_filename(name: str) -> str:
+    """
+    Remove invalid characters from file name for Windows.
+    """
+    return re.sub(r'[<>:"/\\|?*]', "", name).strip()
+
+
+def download_audio(
+    streaming_url: str, song_title: str, save_dir: str = "downloads"
+) -> str:
+    """
+    Download audio from streaming URL and save locally.
+
+    Args:
+        streaming_url (str): Direct streaming URL of the song.
+        song_title (str): Desired filename (will be sanitized).
+        save_dir (str): Directory to save the file.
+
+    Returns:
+        str: Path to the downloaded file.
+    """
+    logger.info(streaming_url)
+    logger.info(song_title)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    sanitized_name = sanitize_filename(song_title) or "audio"
+    file_path = os.path.join(save_dir, f"{sanitized_name}.mp3")
+
+    try:
+        response = requests.get(streaming_url, stream=True)
+        response.raise_for_status()
+
+        with open(file_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        logger.info(f"Downloaded to {file_path}")
+        return file_path
+    except Exception as e:
+        logger.error(f"Failed to download: {e}")
+        return ""
+
+
 @app.route("/")
 def index():
     return "Sanvia is running. Visit particular routes for songs."
@@ -218,6 +266,22 @@ def get_albums():
 @app.route("/top-artists")
 def top_artists():
     return jsonify(cached_top_artists)
+
+
+@app.route("/download-song", methods=["POST"])
+def download_song():
+    data = request.get_json()
+    streaming_url = data.get("streamingUrl")
+    song_title = data.get("title")
+
+    if not streaming_url or not song_title:
+        return {"error": "Missing parameters"}, 400
+
+    path = download_audio(streaming_url, song_title)
+    if path:
+        return send_file(path, as_attachment=True)
+
+    return {"error": "Download failed"}, 500
 
 
 def run_flask():
