@@ -38,6 +38,7 @@ cached_new_releases = []
 
 async def search(query: str) -> List[Dict[str, Any]]:
     try:
+        logger.info(f"search function => query: {query}")
         res = await saavn.search_on_saavn(query)
         data = res.get("data", {}) if isinstance(res, dict) else {}
 
@@ -103,7 +104,7 @@ async def search(query: str) -> List[Dict[str, Any]]:
 
         if not output:
             logger.error("Search returned no songs or albums.")
-
+        logger.info(f"Function output: {output}")
         return output
 
     except Exception as e:
@@ -366,6 +367,7 @@ def download_song():
 def search_route():
     global main_event_loop
     query = request.args.get("query", "")
+    logger.info(f"search route => query: {query}")
     if not query:
         return jsonify({"error": "Missing search query"}), 400
 
@@ -373,6 +375,7 @@ def search_route():
         assert main_event_loop is not None, "Event loop is not initialized"
         future = asyncio.run_coroutine_threadsafe(search(query), main_event_loop)
         results = future.result()
+        logger.info(f"search route => results: {results}")
         return jsonify(results)
     except Exception as e:
         logger.error(f"Search route error: {e}")
