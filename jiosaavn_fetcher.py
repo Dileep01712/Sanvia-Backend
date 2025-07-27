@@ -11,6 +11,8 @@ from waitress import serve
 from flask_cors import CORS
 from jiosaavn import JioSaavn
 from dotenv import load_dotenv
+from typing import Any, Dict, List
+from asyncio import AbstractEventLoop
 from flask import Flask, jsonify, send_file, request
 from firebase import upload_now_trending_to_firebase, read_now_trending_from_firebase
 
@@ -24,6 +26,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 
+main_event_loop: AbstractEventLoop | None = None
 logger = logging.getLogger(__name__)
 PLAYLIST_URL = os.getenv("PLAYLIST_URL", "")
 OUTPUT_FILE = "now_trending.json"
@@ -31,6 +34,81 @@ saavn = JioSaavn()
 cached_albums = []
 cached_top_artists = []
 cached_new_releases = []
+
+
+async def search(query: str) -> List[Dict[str, Any]]:
+    try:
+        res = await saavn.search_on_saavn(query)
+        data = res.get("data", {}) if isinstance(res, dict) else {}
+
+        # Extract songs
+        raw_songs: List[Dict[str, Any]] = []
+        songs_section = data.get("songs", {}) if isinstance(data, dict) else {}
+        if isinstance(songs_section, dict):
+            candidate = songs_section.get("data", [])
+            if isinstance(candidate, list):
+                raw_songs = [item for item in candidate if isinstance(item, dict)]
+
+        # Extract albums
+        raw_albums: List[Dict[str, Any]] = []
+        albums_section = data.get("albums", {}) if isinstance(data, dict) else {}
+        if isinstance(albums_section, dict):
+            candidate_albums = albums_section.get("data", [])
+            if isinstance(candidate_albums, list):
+                raw_albums = [
+                    item for item in candidate_albums if isinstance(item, dict)
+                ]
+
+        output: List[Dict[str, Any]] = []
+
+        # ——— Songs ———
+        for song in raw_songs[:12]:
+            # Try in order: subtitle → more_info.primary_artists → artists.primary
+            subtitle = song.get("subtitle", "") or ""
+            if not subtitle:
+                subtitle = song.get("more_info", {}).get("primary_artists", "") or ""
+
+            if not subtitle:
+                subtitle = (
+                    ", ".join(
+                        artist.get("name", "")
+                        for artist in song.get("artists", {}).get("primary", [])
+                        if isinstance(artist, dict)
+                    )
+                    or "Unknown"
+                )
+
+            output.append(
+                {
+                    "id": song.get("id", ""),
+                    "name": html.unescape(song.get("title", "")),
+                    "primaryArtists": html.unescape(subtitle),
+                    "image": (song.get("image", "") or "").replace("50x50", "500x500"),
+                    "downloadUrl": song.get("url", ""),
+                }
+            )
+
+        # ——— Albums ———
+        for alb in raw_albums[:12]:
+            subtitle = alb.get("music", "") or alb.get("subtitle", "") or ""
+            output.append(
+                {
+                    "id": alb.get("id", ""),
+                    "name": html.unescape(alb.get("title", "")),
+                    "primaryArtists": html.unescape(subtitle),
+                    "image": (alb.get("image", "") or "").replace("50x50", "500x500"),
+                    "downloadUrl": alb.get("url", ""),
+                }
+            )
+
+        if not output:
+            logger.error("Search returned no songs or albums.")
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error fetching search results: {e}")
+        return []
 
 
 async def fetch_and_save_top_songs(limit: int = 12):
@@ -284,12 +362,32 @@ def download_song():
     return {"error": "Download failed"}, 500
 
 
+@app.route("/search")
+def search_route():
+    global main_event_loop
+    query = request.args.get("query", "")
+    if not query:
+        return jsonify({"error": "Missing search query"}), 400
+
+    try:
+        assert main_event_loop is not None, "Event loop is not initialized"
+        future = asyncio.run_coroutine_threadsafe(search(query), main_event_loop)
+        results = future.result()
+        return jsonify(results)
+    except Exception as e:
+        logger.error(f"Search route error: {e}")
+        return jsonify({"error": "Search failed"}), 500
+
+
 def run_flask():
     serve(app, host="0.0.0.0", port=8000)
 
 
 async def main():
     try:
+        global main_event_loop
+        main_event_loop = asyncio.get_running_loop()
+
         await fetch_and_save_top_songs()
         asyncio.create_task(fetch_new_releases_periodically())
         asyncio.create_task(fetch_random_albums_periodically())
