@@ -1,6 +1,10 @@
 import os
+import re
 import json
 import html
+import string
+import random
+import asyncio
 import logging
 import firebase_admin
 from jiosaavn import JioSaavn
@@ -27,7 +31,7 @@ if not firebase_admin._apps:
     firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
 
 
-async def upload_now_trending_to_firebase(
+async def upload_now_trending_songs_to_firebase(
     limit: int = 12, firebase_node: str = "/now_trending"
 ):
     try:
@@ -67,5 +71,76 @@ async def upload_now_trending_to_firebase(
 
 
 async def read_now_trending_from_firebase(firebase_node: str = "/now_trending"):
-    ref = db.reference(firebase_node)
-    return ref.get()
+    try:
+        ref = db.reference(firebase_node)
+        songs = ref.get()
+
+        if not songs:
+            logger.warning("No songs found or data is not a list.")
+            return []
+        
+        return songs
+
+    except Exception as e:
+        logger.error(f"Error reading songs from Firebase: {e}")
+        return []
+
+
+async def upload_random_albums_to_firebase(firebase_node: str = "/random_albums"):
+    try:
+        letters = list(string.ascii_uppercase)
+        random.shuffle(letters)
+        sample_letters = letters[:12]
+
+        combined_results = []
+        for letter in sample_letters:
+            search_result = await saavn.search_albums(letter)
+            await asyncio.sleep(2)
+            if "data" in search_result:
+                combined_results.extend(search_result["data"])
+
+        unique_albums = {}
+        for album in combined_results:
+            unique_albums[album["id"]] = album
+
+        final_album_list = []
+        for album in unique_albums.values():
+            final_album_list.append(
+                {
+                    "id": album.get("id", ""),
+                    "name": html.unescape(album.get("title", "")),
+                    "primaryArtists": html.unescape(album.get("music", "")),
+                    "image": re.sub(r"\d+x\d+", "500x500", album.get("image", "")),
+                    "downloadUrl": album.get("url", ""),
+                }
+            )
+
+        if not final_album_list:
+            logger.warning("Album list is empty after formatting.")
+            return
+
+        db.reference(firebase_node).set(final_album_list)
+        logger.info(
+            f"Uploaded {len(final_album_list)} albums to Firebase at {firebase_node}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error uploading albums to Firebase: {e}")
+
+
+async def read_random_albums_from_firebase(
+    limit: int = 12, firebase_node: str = "/random_albums"
+):
+    try:
+        ref = db.reference(firebase_node)
+        albums = ref.get()
+
+        if not albums or not isinstance(albums, list):
+            logger.warning("No albums found or data is not a list.")
+            return []
+
+        return random.sample(albums, min(limit, len(albums)))
+
+    except Exception as e:
+        logger.error(f"Error reading albums from Firebase: {e}")
+        return []

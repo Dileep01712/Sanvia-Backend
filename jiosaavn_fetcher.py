@@ -1,8 +1,6 @@
 import os
 import re
 import html
-import string
-import random
 import logging
 import asyncio
 import requests
@@ -11,10 +9,14 @@ from waitress import serve
 from flask_cors import CORS
 from jiosaavn import JioSaavn
 from dotenv import load_dotenv
-from typing import Any, Dict, List
 from asyncio import AbstractEventLoop
 from flask import Flask, jsonify, send_file, request
-from firebase import upload_now_trending_to_firebase, read_now_trending_from_firebase
+from firebase import (
+    upload_now_trending_songs_to_firebase,
+    read_now_trending_from_firebase,
+    upload_random_albums_to_firebase,
+    read_random_albums_from_firebase,
+)
 
 app = Flask(__name__)
 CORS(app)
@@ -25,99 +27,32 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler()],
 )
+logger = logging.getLogger(__name__)
 
 main_event_loop: AbstractEventLoop | None = None
-logger = logging.getLogger(__name__)
+
+saavn = JioSaavn()
+cached_top_artists: list = []
+cached_new_releases: list = []
+
 PLAYLIST_URL = os.getenv("PLAYLIST_URL", "")
 OUTPUT_FILE = "now_trending.json"
-saavn = JioSaavn()
-cached_albums = []
-cached_top_artists = []
-cached_new_releases = []
 
 
-async def search(query: str) -> List[Dict[str, Any]]:
-    try:
-        logger.info(f"search function => query: {query}")
-        res = await saavn.search_on_saavn(query)
-        data = res.get("data", {}) if isinstance(res, dict) else {}
+async def fetch_and_save_now_trending_songs_periodically(interval: int = 7200):
+    while True:
+        logger.info(
+            "Background: fetching and uploading now trending songs to Firebase..."
+        )
 
-        # Extract songs
-        raw_songs: List[Dict[str, Any]] = []
-        songs_section = data.get("songs", {}) if isinstance(data, dict) else {}
-        if isinstance(songs_section, dict):
-            candidate = songs_section.get("data", [])
-            if isinstance(candidate, list):
-                raw_songs = [item for item in candidate if isinstance(item, dict)]
+        try:
+            await upload_now_trending_songs_to_firebase()
+            logger.info("Background: successfully uploaded now trending songs.")
+        except Exception as e:
+            logger.error(f"Error fetching playlist: {e}")
 
-        # Extract albums
-        raw_albums: List[Dict[str, Any]] = []
-        albums_section = data.get("albums", {}) if isinstance(data, dict) else {}
-        if isinstance(albums_section, dict):
-            candidate_albums = albums_section.get("data", [])
-            if isinstance(candidate_albums, list):
-                raw_albums = [
-                    item for item in candidate_albums if isinstance(item, dict)
-                ]
-
-        output: List[Dict[str, Any]] = []
-
-        # ——— Songs ———
-        for song in raw_songs[:12]:
-            # Try in order: subtitle → more_info.primary_artists → artists.primary
-            subtitle = song.get("subtitle", "") or ""
-            if not subtitle:
-                subtitle = song.get("more_info", {}).get("primary_artists", "") or ""
-
-            if not subtitle:
-                subtitle = (
-                    ", ".join(
-                        artist.get("name", "")
-                        for artist in song.get("artists", {}).get("primary", [])
-                        if isinstance(artist, dict)
-                    )
-                    or "Unknown"
-                )
-
-            output.append(
-                {
-                    "id": song.get("id", ""),
-                    "name": html.unescape(song.get("title", "")),
-                    "primaryArtists": html.unescape(subtitle),
-                    "image": (song.get("image", "") or "").replace("50x50", "500x500"),
-                    "downloadUrl": song.get("url", ""),
-                }
-            )
-
-        # ——— Albums ———
-        for alb in raw_albums[:12]:
-            subtitle = alb.get("music", "") or alb.get("subtitle", "") or ""
-            output.append(
-                {
-                    "id": alb.get("id", ""),
-                    "name": html.unescape(alb.get("title", "")),
-                    "primaryArtists": html.unescape(subtitle),
-                    "image": (alb.get("image", "") or "").replace("50x50", "500x500"),
-                    "downloadUrl": alb.get("url", ""),
-                }
-            )
-
-        if not output:
-            logger.error("Search returned no songs or albums.")
-        logger.info(f"Function output: {output}")
-        return output
-
-    except Exception as e:
-        logger.error(f"Error fetching search results: {e}")
-        return []
-
-
-async def fetch_and_save_top_songs(limit: int = 12):
-    try:
-        await upload_now_trending_to_firebase(limit)
-    except Exception as e:
-        logger.error(f"Error fetching playlist: {e}")
-        return
+        logger.info(f"Sleeping for 2 hours...")
+        await asyncio.sleep(interval)
 
 
 async def get_new_releases():
@@ -129,10 +64,9 @@ async def get_new_releases():
             logger.error(f"Expected list for 'data', but got {type(songs)}")
             return []
 
-        output = []
+        result = []
         for song in songs[:12]:
             subtitle = song.get("subtitle") or ""
-
             if not subtitle:
                 more_info = song.get("more_info") or {}
                 artist_map = more_info.get("artistMap") or {}
@@ -141,7 +75,7 @@ async def get_new_releases():
                     [artist.get("name", "") for artist in artists if artist.get("name")]
                 )
 
-            output.append(
+            result.append(
                 {
                     "id": song.get("id", ""),
                     "name": html.unescape(song.get("title", "")),
@@ -151,7 +85,7 @@ async def get_new_releases():
                 }
             )
 
-        return output
+        return result
 
     except Exception as e:
         logger.error(f"Error fetching new release: {e}")
@@ -161,67 +95,30 @@ async def get_new_releases():
 async def fetch_new_releases_periodically(interval: int = 7200):
     global cached_new_releases
     while True:
-        logger.info("Fetching new releases...")
+        logger.info("Background: fetching and updating new releases from JioSaavn…")
+
         songs = await get_new_releases()
-
-        if songs and isinstance(songs, list):
+        if songs:
             cached_new_releases = songs
+            logger.info(f"Background: updated {len(cached_new_releases)} new releases.")
+        else:
+            logger.warning("Background: got no new releases.")
 
-        logger.info(f"Updated {len(cached_new_releases)} new releases.")
-        logger.info("Sleeping for 3 hours...")
+        logger.info(f"Sleeping for 2 hours...")
         await asyncio.sleep(interval)
 
 
-async def get_random_albums(limit=12):
-    try:
-        # 1) fire 7 single-letter queries
-        letters = random.sample(string.ascii_lowercase, 7)
-        pool = []
-        for q in letters:
-            resp = await saavn.search_albums(q)
-            data = resp.get("data", []) if isinstance(resp, dict) else resp or []
-            pool.extend(data)
-
-        # 2) dedupe
-        unique = {album["id"]: album for album in pool}.values()
-        choices = list(unique)
-        if not choices:
-            return []
-
-        picked = random.sample(choices, min(limit, len(choices)))
-        result = []
-
-        for album in picked:
-            result.append(
-                {
-                    "id": album.get("id", ""),
-                    "name": html.unescape(album.get("title", "")),
-                    "primaryArtists": html.unescape(album.get("music", "")),
-                    "image": album.get("image", "").replace("50x50", "500x500"),
-                    "perma_url": album.get("url", ""),
-                }
-            )
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error fetching random albums: {e}")
-        return []
-
-
-async def fetch_random_albums_periodically(interval: int = 7200):
-    global cached_albums
+async def fetch_and_save_random_albums_periodically(interval: int = 7200):
     while True:
-        logger.info("Fetching random albums...")
-        albums = await get_random_albums()
+        logger.info("Background: fetching and uploading random albums to Firebase...")
 
-        if albums:
-            cached_albums = albums
-            logger.info(f"Updated {len(albums)} random albums.")
-        else:
-            logger.warning("Failed to update album list.")
+        try:
+            await upload_random_albums_to_firebase()
+            logger.info("Background: successfully uploaded random albums.")
+        except Exception as e:
+            logger.error(f"Background: failed to upload random albums - {e}")
 
-        logger.info("Sleeping for 3 hours...")
+        logger.info(f"Sleeping for 2 hours...")
         await asyncio.sleep(interval)
 
 
@@ -241,9 +138,9 @@ async def get_top_artists(limit: int = 12):
             logger.error("'data' is not a dictionary")
             return
 
-        top_artists = []
+        result = []
         for artist in artist_list[:limit]:
-            top_artists.append(
+            result.append(
                 {
                     "id": artist.get("artistid", ""),
                     "name": artist.get("name", ""),
@@ -253,23 +150,26 @@ async def get_top_artists(limit: int = 12):
                 }
             )
 
-        return top_artists
+        return result
 
     except Exception as e:
         logging.error(f"Error fetching top artists: {e}")
+        return []
 
 
 async def fetch_top_artists_periodically(interval: int = 7200):
     global cached_top_artists
     while True:
-        logger.info("Fetching top artists...")
-        songs = await get_top_artists()
+        logger.info("Background: fetching and updating top artists from JioSaavn…")
 
-        if songs and isinstance(songs, list):
-            cached_top_artists = songs
+        artists = await get_top_artists()
+        if artists:
+            cached_top_artists = artists
+            logger.info(f"Background: updated {len(cached_top_artists)} top artists.")
+        else:
+            logger.warning("Background: got no top artists.")
 
-        logger.info(f"Updated {len(cached_top_artists)} top artists.")
-        logger.info("Sleeping for 3 hours...")
+        logger.info(f"Sleeping for 2 hours...")
         await asyncio.sleep(interval)
 
 
@@ -294,8 +194,6 @@ def download_audio(
     Returns:
         str: Path to the downloaded file.
     """
-    logger.info(streaming_url)
-    logger.info(song_title)
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
@@ -303,11 +201,11 @@ def download_audio(
     file_path = os.path.join(save_dir, f"{sanitized_name}.mp3")
 
     try:
-        response = requests.get(streaming_url, stream=True)
-        response.raise_for_status()
+        resp = requests.get(streaming_url, stream=True)
+        resp.raise_for_status()
 
         with open(file_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
+            for chunk in resp.iter_content(chunk_size=8192):
                 f.write(chunk)
 
         logger.info(f"Downloaded to {file_path}")
@@ -319,67 +217,56 @@ def download_audio(
 
 @app.route("/")
 def index():
-    return "Sanvia is running. Visit particular routes for songs."
+    return "Sanvia-Backend is running. Visit particular routes for songs, albums and top artists."
 
 
 @app.route("/now-trending")
 def now_trending():
+    logger.info("Serving /now-trending from Firebase")
     try:
         data = asyncio.run(read_now_trending_from_firebase())
         return jsonify(data)
     except Exception as e:
-        logger.error(f"Error reading now trending from Firebase: {e}")
-        return jsonify({"error": "Failed to fetch data"})
+        logger.error(f"Error reading now trending songs from firebase: {e}")
+        return jsonify([]), 500
 
 
 @app.route("/new-releases")
 def new_releases():
-    return jsonify(cached_new_releases)
+    logger.info("Serving /new-releases from cache")
+    return jsonify(cached_new_releases or [])
 
 
 @app.route("/albums")
 def get_albums():
-    return jsonify(cached_albums)
+    logger.info("Serving /albums from Firebase")
+    try:
+        data = asyncio.run(read_random_albums_from_firebase())
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Error reading random albums from firebase: {e}")
+        return jsonify([]), 500
 
 
 @app.route("/top-artists")
 def top_artists():
-    return jsonify(cached_top_artists)
+    logger.info("Serving /top-artists from cache")
+    return jsonify(cached_top_artists or [])
 
 
 @app.route("/download-song", methods=["POST"])
 def download_song():
-    data = request.get_json()
-    streaming_url = data.get("streamingUrl")
-    song_title = data.get("title")
+    data = request.get_json() or {}
+    url = data.get("streamingUrl")
+    title = data.get("title")
 
-    if not streaming_url or not song_title:
-        return {"error": "Missing parameters"}, 400
+    if not url or not title:
+        return jsonify({"error": "Missing parameters"}), 400
 
-    path = download_audio(streaming_url, song_title)
+    path = download_audio(url, title)
     if path:
         return send_file(path, as_attachment=True)
-
-    return {"error": "Download failed"}, 500
-
-
-@app.route("/search")
-def search_route():
-    global main_event_loop
-    query = request.args.get("query", "")
-    logger.info(f"search route => query: {query}")
-    if not query:
-        return jsonify({"error": "Missing search query"}), 400
-
-    try:
-        assert main_event_loop is not None, "Event loop is not initialized"
-        future = asyncio.run_coroutine_threadsafe(search(query), main_event_loop)
-        results = future.result()
-        logger.info(f"search route => results: {results}")
-        return jsonify(results)
-    except Exception as e:
-        logger.error(f"Search route error: {e}")
-        return jsonify({"error": "Search failed"}), 500
+    return jsonify({"error": "Download failed"}), 500
 
 
 def run_flask():
@@ -391,26 +278,25 @@ async def main():
         global main_event_loop
         main_event_loop = asyncio.get_running_loop()
 
-        await fetch_and_save_top_songs()
+        asyncio.create_task(fetch_and_save_now_trending_songs_periodically())
+        asyncio.create_task(fetch_and_save_random_albums_periodically())
         asyncio.create_task(fetch_new_releases_periodically())
-        asyncio.create_task(fetch_random_albums_periodically())
         asyncio.create_task(fetch_top_artists_periodically())
 
-        server_thread = threading.Thread(target=run_flask)
-        server_thread.daemon = True
+        server_thread = threading.Thread(target=run_flask, daemon=True)
         server_thread.start()
 
         while True:
             await asyncio.sleep(3600)
 
     except Exception as e:
-        logger.error(f"Main loop exception: {e}")
+        logger.error(f"Main loop exception failed: {e}")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Shutting down…")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
