@@ -94,9 +94,19 @@ async def get_new_releases():
 
 async def fetch_new_releases_periodically(interval: int = 7200):
     global cached_new_releases
+
+    # Run once at startup
+    logger.info("Initial fetch: getting new releases from JioSaavn…")
+    songs = await get_new_releases()
+    if songs:
+        cached_new_releases = songs
+        logger.info(f"Initial fetch: cached {len(cached_new_releases)} new releases.")
+    else:
+        logger.warning("Initial fetch: got no new releases.")
+
+    # Start the periodic fetch loop
     while True:
         logger.info("Background: fetching and updating new releases from JioSaavn…")
-
         songs = await get_new_releases()
         if songs:
             cached_new_releases = songs
@@ -159,6 +169,17 @@ async def get_top_artists(limit: int = 12):
 
 async def fetch_top_artists_periodically(interval: int = 7200):
     global cached_top_artists
+    
+    # Run once at startup
+    logger.info("Initial fetch: getting top artists from JioSaavn...")
+    artists = await get_top_artists()
+    if artists:
+        cached_top_artists = artists
+        logger.info(f"Initial fetch: cached {len(cached_top_artists)} top artists.")
+    else:
+        logger.warning(f"Initial fetch: got no top artists.")
+        
+    # Start the periodic fetch loop
     while True:
         logger.info("Background: fetching and updating top artists from JioSaavn…")
 
